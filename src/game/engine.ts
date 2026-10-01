@@ -134,8 +134,9 @@ export class Engine {
   onState(s: NetState) {
     const r = this.remotes.get(s.id);
     if (r) {
+      const renamed = s.name !== r.s.name;
       r.s = s;
-      if (s.name !== r.s.name) emit();
+      if (renamed) emit();
     }
   }
   onEvent(e: Ev) {
@@ -539,7 +540,7 @@ export class Engine {
       emit();
     }
 
-    this.netSend();
+    this.netSend(dt);
   }
 
   private breakBlock(x: number, y: number, z: number, b: number) {
@@ -559,8 +560,8 @@ export class Engine {
     emit();
   }
 
-  private netSend() {
-    this.netAcc += 1 / 60;
+  private netSend(dt: number) {
+    this.netAcc += dt;
     const ch = this.channel;
     if (!ch || document.hidden || G.ui === "menu") return;
     if (this.netAcc < NET_TICK) return;
