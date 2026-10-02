@@ -107,6 +107,7 @@ export default function Game() {
       <Hud
         engine={engine}
         onJoin={(name, code) => {
+          engine.startAudio();
           G.name = name;
           G.room = code;
           const url = new URL(window.location.href);

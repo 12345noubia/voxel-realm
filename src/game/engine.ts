@@ -2,6 +2,7 @@ import * as THREE from "three";
 import type { RealtimeChannel } from "@supabase/supabase-js";
 import { World, WY } from "./world";
 import { B, I, def, isBlock, FOOD } from "./blocks";
+import { initAudio, setUnderwater, sfx } from "./audio";
 import { G, emit, addItem, held, sysChat, toast, type Slot } from "./store";
 
 export const DAY_LEN = 480; // seconds per full day/night cycle
@@ -28,7 +29,8 @@ type Ev =
 
 const STARTER: Slot[] = [
   { id: I.SWORD, count: 1 }, { id: I.PICK, count: 1 }, { id: B.PLANKS, count: 32 }, { id: B.COBBLE, count: 32 },
-  { id: B.GLASS, count: 16 }, { id: B.BRICKS, count: 32 }, { id: B.LOG, count: 8 }, { id: I.BREAD, count: 6 }, { id: B.SAND, count: 16 },
+  { id: B.GLASS, count: 16 }, { id: B.BRICKS, count: 32 }, { id: B.TORCH, count: 16 }, { id: I.BREAD, count: 6 }, { id: B.FENCE, count: 16 },
+  { id: B.LADDER, count: 12 }, { id: B.LOG, count: 8 }, { id: B.SAND, count: 16 }, { id: B.BED, count: 2 }, { id: B.FLOWER, count: 6 },
 ];
 
 const hashColor = (id: string) => {
@@ -228,6 +230,7 @@ export class Engine {
     if (G.ui === "dead") return;
     G.hp = Math.max(0, G.hp - n);
     G.hurtAt = performance.now();
+    sfx("hit", 0.8);
     this.burst(this.pos.x, this.pos.y + 1, this.pos.z, new THREE.Color(0.8, 0.05, 0.05), 8);
     if (G.hp <= 0) this.die(by);
     emit();
@@ -252,6 +255,9 @@ export class Engine {
     this.mining = false;
     if (document.pointerLockElement) document.exitPointerLock();
     emit();
+  }
+  startAudio() {
+    initAudio();
   }
   respawn() {
     G.hp = 20;
@@ -302,6 +308,7 @@ export class Engine {
       const dmg = held()?.id === I.SWORD ? 5 : 1;
       const kx = Math.sign(r.s.x - this.pos.x) * Math.min(1, Math.abs(r.s.x - this.pos.x));
       const kz = Math.sign(r.s.z - this.pos.z) * Math.min(1, Math.abs(r.s.z - this.pos.z));
+      sfx("hit");
       this.send({ t: "hit", from: this.id, fromName: G.name, target: hit.id, dmg, kx, kz });
       this.burst(r.s.x, r.s.y + 1.2, r.s.z, new THREE.Color(0.9, 0.1, 0.1), 10);
       return;
@@ -360,6 +367,7 @@ export class Engine {
       if (this.boxHits(px, py, pz, this.pos.x, this.pos.y, this.pos.z)) return;
       for (const r of this.remotes.values()) if (this.boxHits(px, py, pz, r.s.x, r.s.y, r.s.z)) return;
       this.applyBlock(px, py, pz, h.id, true);
+      sfx("place");
       if (h.id === B.CHEST) this.world.chests.set(`${px},${py},${pz}`, Array(27).fill(null));
       h.count--;
       if (h.count <= 0) G.inv[G.sel] = null;
@@ -407,10 +415,17 @@ export class Engine {
     const playing = G.ui === "play";
     const alive = G.ui !== "dead" && G.ui !== "menu";
     const w = this.world;
+    const wasWater = this.inWater;
     this.inWater = w.get(Math.floor(this.pos.x), Math.floor(this.pos.y + 0.5), Math.floor(this.pos.z)) === B.WATER;
+    if (wasWater !== this.inWater && G.ui !== "menu" && this.elapsed > 1) {
+      const sy = Math.floor(this.pos.y + 0.5) + (this.inWater ? 0.9 : -0.1);
+      this.burst(this.pos.x, sy, this.pos.z, new THREE.Color(0.75, 0.9, 1), 26, 4.5);
+      sfx("splash", Math.min(1, 0.4 + Math.abs(this.vel.y) / 10));
+    }
     const headWater = w.get(Math.floor(this.pos.x), Math.floor(this.pos.y + 1.62), Math.floor(this.pos.z)) === B.WATER;
     if (headWater !== G.underwater) {
       G.underwater = headWater;
+      setUnderwater(headWater);
       emit();
     }
 
@@ -430,11 +445,18 @@ export class Engine {
       const acc = 1 - Math.exp(-(this.onGround ? 16 : this.inWater ? 6 : 4) * dt);
       this.vel.x += (wx - this.vel.x) * acc;
       this.vel.z += (wz - this.vel.z) * acc;
-      if (this.inWater) {
-        this.vel.y -= 9 * dt;
-        this.vel.y *= Math.exp(-2.5 * dt);
-        if (k.has("Space")) this.vel.y = Math.min(this.vel.y + 22 * dt, 3.8);
-        this.vel.y = Math.max(this.vel.y, -3);
+      const fx = Math.floor(this.pos.x), fz = Math.floor(this.pos.z);
+      const onLadder = w.get(fx, Math.floor(this.pos.y + 0.2), fz) === B.LADDER || w.get(fx, Math.floor(this.pos.y + 1.2), fz) === B.LADDER;
+      if (onLadder) {
+        const up = k.has("Space") || fwd > 0;
+        this.vel.y = up ? 3.2 : k.has("ShiftLeft") ? 0 : Math.max(this.vel.y - 20 * dt, -2.2);
+        this.fallTop = null;
+      } else if (this.inWater) {
+        // buoyant: hold Space to swim up, otherwise drift down gently
+        this.vel.y -= 5 * dt;
+        this.vel.y *= Math.exp(-3 * dt);
+        if (k.has("Space")) this.vel.y = Math.min(this.vel.y + 20 * dt, headWater ? 3.4 : 4.6);
+        this.vel.y = Math.max(this.vel.y, -1.6);
       } else {
         this.vel.y = Math.max(this.vel.y - 28 * dt, -50);
         if (k.has("Space") && this.onGround) this.vel.y = 8.6;
@@ -554,6 +576,7 @@ export class Engine {
       (this.world.chests.get(key) ?? []).forEach((s) => s && addItem(s.id, s.count));
       this.world.chests.delete(key);
     }
+    sfx("break");
     const tile = getTileColor(b);
     this.burst(x + 0.5, y + 0.5, z + 0.5, tile, 16);
     this.hungerT += 0.5;
@@ -585,7 +608,8 @@ const BLOCK_COLORS: Record<number, [number, number, number]> = {
   [B.GRASS]: [0.37, 0.62, 0.21], [B.DIRT]: [0.52, 0.38, 0.26], [B.STONE]: [0.5, 0.5, 0.5], [B.COBBLE]: [0.45, 0.45, 0.45],
   [B.PLANKS]: [0.63, 0.5, 0.3], [B.LOG]: [0.42, 0.32, 0.19], [B.LEAVES]: [0.23, 0.5, 0.15], [B.SAND]: [0.86, 0.81, 0.64],
   [B.GLASS]: [0.75, 0.9, 0.95], [B.BRICKS]: [0.5, 0.5, 0.5], [B.BED]: [0.7, 0.13, 0.14], [B.CHEST]: [0.62, 0.42, 0.17],
-  [B.CRAFT]: [0.6, 0.45, 0.28], [B.CORAL]: [0.88, 0.32, 0.44],
+  [B.CRAFT]: [0.6, 0.45, 0.28], [B.CORAL]: [0.88, 0.32, 0.44], [B.TORCH]: [1, 0.75, 0.3], [B.FENCE]: [0.63, 0.5, 0.3],
+  [B.LADDER]: [0.55, 0.4, 0.22], [B.FLOWER]: [0.85, 0.15, 0.15], [B.FLOWER_Y]: [0.95, 0.85, 0.2],
 };
 export function getTileColor(b: number) {
   const c = BLOCK_COLORS[b] ?? [0.6, 0.6, 0.6];

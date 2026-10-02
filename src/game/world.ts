@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { B, I, def, FACES, GeoBuilder, getMaterials } from "./blocks";
+import { B, I, T, def, FACES, GeoBuilder, getMaterials } from "./blocks";
 import type { Slot } from "./store";
 
 export const WX = 96;
@@ -44,6 +44,7 @@ export class World {
   group = new THREE.Group();
   meshes = new Map<number, THREE.Mesh[]>();
   spawn = new THREE.Vector3(66, 30, 44);
+  version = 0;
 
   idx(x: number, y: number, z: number) {
     return x + z * WX + y * WX * WZ;
@@ -64,6 +65,7 @@ export class World {
   set(x: number, y: number, z: number, b: number) {
     if (!this.inside(x, y, z)) return;
     this.data[this.idx(x, y, z)] = b;
+    this.version++;
     const cx = Math.floor(x / CH), cz = Math.floor(z / CH);
     this.markDirty(cx, cz);
     if (x % CH === 0) this.markDirty(cx - 1, cz);
@@ -107,14 +109,17 @@ export class World {
       }
 
     const nearHouse = (x: number, z: number) =>
-      HOUSES.some((h) => x >= h.x - 3 && x <= h.x + 9 && z >= h.z - 3 && z <= h.z + 9) ||
-      (x >= TOWER.x - 2 && x <= TOWER.x + 8 && z >= TOWER.z - 2 && z <= TOWER.z + 8);
+      HOUSES.some((h) => x >= h.x - 4 && x <= h.x + 10 && z >= h.z - 4 && z <= h.z + 12) ||
+      (x >= TOWER.x - 4 && x <= TOWER.x + 10 && z >= TOWER.z - 4 && z <= TOWER.z + 10);
 
-    // trees
+    // trees + wildflowers
     for (let x = 3; x < WX - 3; x++)
       for (let z = 3; z < WZ - 3; z++) {
         const h = heights[x + z * WX] ?? 0;
-        if (this.get(x, h, z) !== B.GRASS || hash2(x, z, 7) > 0.022 || nearHouse(x, z)) continue;
+        if (this.get(x, h, z) !== B.GRASS || nearHouse(x, z)) continue;
+        const fh = hash2(x, z, 21);
+        if (fh < 0.035 && this.get(x, h + 1, z) === B.AIR) this.put(x, h + 1, z, fh < 0.017 ? B.FLOWER : B.FLOWER_Y);
+        if (hash2(x, z, 7) > 0.022) continue;
         const th = 4 + Math.floor(hash2(x, z, 8) * 2);
         for (let k = 1; k <= th; k++) this.put(x, h + k, z, B.LOG);
         for (let dy = th - 2; dy <= th + 1; dy++) {
@@ -122,7 +127,8 @@ export class World {
           for (let dx = -r; dx <= r; dx++)
             for (let dz = -r; dz <= r; dz++) {
               if (Math.abs(dx) === r && Math.abs(dz) === r && hash2(x + dx, z + dz, dy) < 0.6) continue;
-              if (this.get(x + dx, h + dy, z + dz) === B.AIR) this.put(x + dx, h + dy, z + dz, B.LEAVES);
+              const cur = this.get(x + dx, h + dy, z + dz);
+              if (cur === B.AIR || cur === B.FLOWER || cur === B.FLOWER_Y) this.put(x + dx, h + dy, z + dz, B.LEAVES);
             }
         }
       }
@@ -134,9 +140,9 @@ export class World {
     this.spawn.set(sx + 0.5, this.groundBelow(sx, WY - 1, sz), sz + 0.5);
   }
 
-  private flatten(x0: number, z0: number, w: number, base: number) {
-    for (let x = x0 - 1; x <= x0 + w; x++)
-      for (let z = z0 - 1; z <= z0 + w; z++) {
+  private flatten(x0: number, z0: number, x1: number, z1: number, base: number) {
+    for (let x = x0; x <= x1; x++)
+      for (let z = z0; z <= z1; z++) {
         for (let y = 1; y < WY; y++) {
           const cur = this.get(x, y, z);
           if (y < base - 2) {
@@ -152,7 +158,7 @@ export class World {
     const s: Slot[] = Array(27).fill(null);
     const pool = [
       { id: I.APPLE, n: 3 }, { id: I.BREAD, n: 2 }, { id: B.GLASS, n: 12 }, { id: B.PLANKS, n: 16 },
-      { id: B.BRICKS, n: 16 }, { id: B.LOG, n: 6 }, { id: B.COBBLE, n: 20 },
+      { id: B.BRICKS, n: 16 }, { id: B.LOG, n: 6 }, { id: B.COBBLE, n: 20 }, { id: B.TORCH, n: 8 }, { id: B.FENCE, n: 8 },
     ];
     extra.forEach((e, i) => (s[i * 4] = e));
     for (let k = 0; k < 5; k++) {
@@ -163,77 +169,100 @@ export class World {
     return s;
   }
 
+  /** Rustic cabin: cobble foundation, log frame, stepped gable roof, chimney, yard fence, flowerbeds, lamp posts. */
   private house(x0: number, z0: number, base: number, n: number) {
-    this.flatten(x0, z0, 7, base);
+    this.flatten(x0 - 3, z0 - 3, x0 + 9, z0 + 11, base);
     const y0 = base;
-    for (let dx = 0; dx < 7; dx++) for (let dz = 0; dz < 7; dz++) this.put(x0 + dx, y0, z0 + dz, B.COBBLE);
+    const P = (dx: number, y: number, dz: number, b: number) => this.put(x0 + dx, y, z0 + dz, b);
+    for (let dx = 0; dx < 7; dx++) for (let dz = 0; dz < 7; dz++) { P(dx, y0, dz, B.COBBLE); P(dx, y0 - 1, dz, B.COBBLE); }
     for (let y = y0 + 1; y <= y0 + 4; y++)
       for (let dx = 0; dx < 7; dx++)
         for (let dz = 0; dz < 7; dz++) {
-          const edgeX = dx === 0 || dx === 6, edgeZ = dz === 0 || dz === 6;
-          if (!edgeX && !edgeZ) continue;
-          this.put(x0 + dx, y, z0 + dz, edgeX && edgeZ ? B.LOG : B.PLANKS);
+          const ex = dx === 0 || dx === 6, ez = dz === 0 || dz === 6;
+          if (!ex && !ez) continue;
+          const pillar = (ex && ez) || (ez && dz === 0 && dx === 3) || (ex && dz === 3);
+          P(dx, y, dz, y === y0 + 1 ? B.COBBLE : pillar ? B.LOG : B.PLANKS);
+          if (ex && ez) P(dx, y, dz, B.LOG);
         }
     for (let y = y0 + 2; y <= y0 + 3; y++) {
-      for (let k = 2; k <= 4; k++) {
-        this.put(x0 + k, y, z0, B.GLASS);
-        this.put(x0, y, z0 + k, B.GLASS);
-        this.put(x0 + 6, y, z0 + k, B.GLASS);
-      }
-      this.put(x0 + 1, y, z0 + 6, B.GLASS);
-      this.put(x0 + 5, y, z0 + 6, B.GLASS);
+      for (const k of [2, 4]) { P(k, y, 0, B.GLASS); P(0, y, k, B.GLASS); P(6, y, k, B.GLASS); }
+      P(1, y, 6, B.GLASS); P(5, y, 6, B.GLASS);
     }
-    this.put(x0 + 3, y0 + 1, z0 + 6, B.AIR);
-    this.put(x0 + 3, y0 + 2, z0 + 6, B.AIR);
-    for (let dx = -1; dx <= 7; dx++) for (let dz = -1; dz <= 7; dz++) this.put(x0 + dx, y0 + 5, z0 + dz, B.BRICKS);
-    for (let dx = 0; dx <= 6; dx++) for (let dz = 0; dz <= 6; dz++) this.put(x0 + dx, y0 + 6, z0 + dz, B.PLANKS);
-    for (let dx = 1; dx <= 5; dx++) for (let dz = 1; dz <= 5; dz++) this.put(x0 + dx, y0 + 7, z0 + dz, B.BRICKS);
-    for (let dx = 2; dx <= 4; dx++) for (let dz = 2; dz <= 4; dz++) this.put(x0 + dx, y0 + 8, z0 + dz, B.PLANKS);
+    for (const k of [2, 4]) for (let y = y0 + 1; y <= y0 + 4; y++) P(k, y, 6, B.LOG); // door frame
+    P(3, y0 + 1, 6, B.AIR); P(3, y0 + 2, 6, B.AIR); P(3, y0 + 3, 6, B.PLANKS);
+    // stepped gable roof (ridge runs front-to-back) with overhangs
+    for (let L = 0; L <= 4; L++) {
+      const y = y0 + 5 + L, lo = -1 + L, hi = 7 - L;
+      for (let dz = -1; dz <= 7; dz++) { P(lo, y, dz, L === 4 ? B.LOG : B.PLANKS); P(hi, y, dz, L === 4 ? B.LOG : B.PLANKS); }
+      if (L === 0) for (let dx = 0; dx <= 6; dx++) for (let dz = 0; dz <= 6; dz++) P(dx, y, dz, B.PLANKS);
+      else for (let dx = lo + 1; dx < hi; dx++) { P(dx, y, 0, B.PLANKS); P(dx, y, 6, B.PLANKS); }
+    }
+    P(3, y0 + 7, 6, B.GLASS); P(3, y0 + 7, 0, B.GLASS);
+    for (let y = y0 + 5; y <= y0 + 9; y++) P(5, y, 4, B.COBBLE); // chimney
     // interior
-    this.put(x0 + 1, y0 + 1, z0 + 1, B.BED);
-    this.put(x0 + 1, y0 + 1, z0 + 2, B.BED);
-    this.put(x0 + 5, y0 + 1, z0 + 1, B.CHEST);
-    this.put(x0 + 5, y0 + 1, z0 + 3, B.CRAFT);
+    P(1, y0 + 1, 1, B.BED); P(1, y0 + 1, 2, B.BED);
+    P(5, y0 + 1, 1, B.CHEST); P(5, y0 + 1, 3, B.CRAFT);
+    P(3, y0 + 1, 1, B.TORCH); P(5, y0 + 1, 5, B.TORCH);
     const extra: Slot[] = n === 0 ? [{ id: I.SWORD, count: 1 }] : n === 2 ? [{ id: I.PICK, count: 1 }] : [];
     this.chests.set(`${x0 + 5},${y0 + 1},${z0 + 1}`, this.loot(n + 1, extra));
-    // path to door
-    for (let k = 7; k <= 9; k++) if (this.get(x0 + 3, y0, z0 + k) === B.GRASS) this.put(x0 + 3, y0, z0 + k, B.COBBLE);
+    // yard: path, flowerbeds, lamp posts, fence
+    for (let dz = 7; dz <= 10; dz++) P(3, y0, dz, B.COBBLE);
+    for (const dx of [0, 1, 5, 6]) { P(dx, y0, 7, B.DIRT); P(dx, y0 + 1, 7, (dx + n) % 2 ? B.FLOWER : B.FLOWER_Y); }
+    for (const dx of [2, 4]) { P(dx, y0 + 1, 9, B.FENCE); P(dx, y0 + 2, 9, B.TORCH); }
+    for (let dx = -2; dx <= 8; dx++) for (let dz = -2; dz <= 10; dz++) {
+      const edge = dx === -2 || dx === 8 || dz === -2 || dz === 10;
+      if (edge && !(dz === 10 && dx >= 2 && dx <= 4)) P(dx, y0 + 1, dz, B.FENCE);
+    }
   }
 
-  /** Underwater glass observatory with a spiral stair, reachable from the surface. */
+  /** Multi-tier glass + stone-brick observation tower on a railed sea-floor platform. */
   private tower(x0: number, z0: number) {
     const fy = 5;
-    const top = SEA + 4;
-    for (let dx = -1; dx <= 7; dx++)
-      for (let dz = -1; dz <= 7; dz++) {
-        for (let y = 1; y <= fy; y++) this.put(x0 + dx, y, z0 + dz, y === fy ? B.BRICKS : B.STONE);
-        for (let y = fy + 1; y <= SEA; y++) if (dx < 0 || dx > 6 || dz < 0 || dz > 6) this.put(x0 + dx, y, z0 + dz, B.WATER);
+    const roof = SEA + 4;
+    const P = (dx: number, y: number, dz: number, b: number) => this.put(x0 + dx, y, z0 + dz, b);
+    for (let dx = -3; dx <= 9; dx++)
+      for (let dz = -3; dz <= 9; dz++) {
+        for (let y = 1; y <= fy; y++) P(dx, y, dz, y === fy ? B.BRICKS : B.STONE);
+        for (let y = fy + 1; y <= SEA; y++) P(dx, y, dz, B.WATER);
+        for (let y = SEA + 1; y < WY; y++) P(dx, y, dz, B.AIR);
+        if (dx === -3 || dx === 9 || dz === -3 || dz === 9) P(dx, fy + 1, dz, B.FENCE);
       }
-    for (let y = fy + 1; y <= top; y++)
+    for (let y = fy + 1; y < roof; y++)
       for (let dx = 0; dx < 7; dx++)
         for (let dz = 0; dz < 7; dz++) {
-          const edgeX = dx === 0 || dx === 6, edgeZ = dz === 0 || dz === 6;
+          const ex = dx === 0 || dx === 6, ez = dz === 0 || dz === 6;
+          const band = y === fy + 4 || y === SEA;
           let b: number = B.AIR;
-          if (edgeX || edgeZ) b = (edgeX && edgeZ) || y === fy + 6 || y === top ? B.BRICKS : B.GLASS;
-          if (y === top) b = B.BRICKS;
-          this.put(x0 + dx, y, z0 + dz, b);
+          if (ex || ez) {
+            if ((ex && ez) || band) b = B.BRICKS;
+            else if (y <= fy + 3) b = y === fy + 2 && (dx === 3 || dz === 3) ? B.GLASS : B.BRICKS;
+            else b = B.GLASS;
+          } else if (band) b = B.BRICKS; // floors
+          P(dx, y, dz, b);
         }
-    // roof hatch + surface door
-    this.put(x0 + 3, top, z0 + 3, B.AIR);
-    this.put(x0 + 3, SEA + 1, z0 + 6, B.AIR);
-    this.put(x0 + 3, SEA + 2, z0 + 6, B.AIR);
-    // spiral stair around inner ring
-    const ring: [number, number][] = [];
-    for (let k = 1; k <= 5; k++) ring.push([k, 1]);
-    for (let k = 2; k <= 5; k++) ring.push([5, k]);
-    for (let k = 4; k >= 1; k--) ring.push([k, 5]);
-    for (let k = 4; k >= 2; k--) ring.push([1, k]);
-    for (let k = 0; fy + 1 + k <= SEA + 2; k++) {
-      const p = ring[k % ring.length]!;
-      this.put(x0 + p[0], fy + 1 + k, z0 + p[1], B.PLANKS);
-    }
-    this.put(x0 + 3, fy + 1, z0 + 3, B.CHEST);
-    this.chests.set(`${x0 + 3},${fy + 1},${z0 + 3}`, this.loot(99, [{ id: I.SWORD, count: 1 }, { id: B.GLASS, count: 32 }]));
+    for (let dx = -1; dx <= 7; dx++)
+      for (let dz = -1; dz <= 7; dz++) {
+        P(dx, roof, dz, B.BRICKS);
+        if (dx === -1 || dx === 7 || dz === -1 || dz === 7) P(dx, roof + 1, dz, B.FENCE);
+      }
+    // surface door
+    P(3, SEA + 1, 6, B.AIR); P(3, SEA + 2, 6, B.AIR);
+    for (let dz = 7; dz <= 8; dz++) P(3, SEA, dz, B.PLANKS); // little dock
+    // ladder shaft through every floor up to the roof hatch
+    for (let y = fy + 1; y <= roof; y++) P(1, y, 1, B.LADDER);
+    // floodlight mast
+    P(3, roof + 1, 3, B.FENCE); P(3, roof + 2, 3, B.FENCE); P(3, roof + 3, 3, B.TORCH);
+    // furnishings per tier
+    P(5, fy + 1, 5, B.CHEST); P(3, fy + 1, 3, B.TORCH); P(5, fy + 1, 1, B.CORAL);
+    P(5, fy + 5, 5, B.CHEST); P(3, fy + 5, 3, B.TORCH); P(1, fy + 5, 5, B.BED); P(2, fy + 5, 5, B.CRAFT);
+    P(5, SEA + 1, 5, B.CRAFT); P(5, SEA + 1, 1, B.TORCH);
+    this.chests.set(`${x0 + 5},${fy + 1},${z0 + 5}`, this.loot(99, [{ id: I.SWORD, count: 1 }, { id: B.GLASS, count: 32 }]));
+    this.chests.set(`${x0 + 5},${fy + 5},${z0 + 5}`, this.loot(77, [{ id: B.LADDER, count: 8 }, { id: B.TORCH, count: 12 }]));
+  }
+
+  /** Floodlight anchor for the scene. */
+  floodlight() {
+    return new THREE.Vector3(TOWER.x + 3.5, SEA + 7.5, TOWER.z + 3.5);
   }
 
   // ---------- meshing ----------
@@ -250,13 +279,18 @@ export class World {
     const cx = ci % NCX, cz = Math.floor(ci / NCX);
     const op = new GeoBuilder();
     const tr = new GeoBuilder();
+    const wa = new GeoBuilder();
     for (let y = 0; y < WY; y++)
       for (let z = cz * CH; z < cz * CH + CH; z++)
         for (let x = cx * CH; x < cx * CH + CH; x++) {
           const b = this.data[this.idx(x, y, z)] ?? 0;
           if (b === B.AIR) continue;
           const d = def(b);
-          const gb = d.trans ? tr : op;
+          if (d.shape) {
+            this.shape(op, x, y, z, b);
+            continue;
+          }
+          const gb = b === B.WATER ? wa : d.trans ? tr : op;
           const topH = b === B.WATER && this.get(x, y + 1, z) !== B.WATER ? 0.88 : 1;
           for (const f of FACES) {
             const n = this.get(x + f.d[0], y + f.d[1], z + f.d[2]);
@@ -277,9 +311,75 @@ export class World {
     const mats = getMaterials();
     const a = new THREE.Mesh(op.build(), mats.opaque);
     const t = new THREE.Mesh(tr.build(), mats.trans);
+    const wm = new THREE.Mesh(wa.build(), mats.water);
     t.renderOrder = 1;
-    this.group.add(a, t);
-    this.meshes.set(ci, [a, t]);
+    wm.renderOrder = 2;
+    this.group.add(a, t, wm);
+    this.meshes.set(ci, [a, t, wm]);
+  }
+
+  private shape(gb: GeoBuilder, x: number, y: number, z: number, b: number) {
+    const tri = (t: number): [number, number, number] => [t, t, t];
+    switch (def(b).shape) {
+      case "bed": {
+        const head = this.get(x, y, z - 1) !== B.BED;
+        const legs: [number, number][] = [[0.02, 0.02], [0.83, 0.02], [0.02, 0.83], [0.83, 0.83]];
+        for (const [lx, lz] of legs) gb.box(x, y, z, [lx, 0, lz], [lx + 0.15, 0.32, lz + 0.15], [T.logTop, T.logSide, T.logTop]);
+        gb.box(x, y, z, [0, 0.22, 0], [1, 0.36, 1], tri(T.planks));
+        gb.box(x, y, z, [0.04, 0.36, 0.02], [0.96, 0.5, 0.98], tri(T.woolWhite));
+        if (head) {
+          gb.box(x, y, z, [0, 0.22, 0], [1, 0.95, 0.08], tri(T.planks));
+          gb.box(x, y, z, [0.14, 0.5, 0.1], [0.86, 0.68, 0.42], tri(T.woolWhite), 1.1);
+          gb.box(x, y, z, [0.02, 0.36, 0.48], [0.98, 0.62, 1], tri(T.woolRed));
+        } else {
+          gb.box(x, y, z, [0.02, 0.36, 0], [0.98, 0.62, 0.98], tri(T.woolRed));
+          gb.box(x, y, z, [0, 0.22, 0.92], [1, 0.62, 1], tri(T.planks));
+        }
+        break;
+      }
+      case "torch":
+        gb.box(x, y, z, [0.44, 0, 0.44], [0.56, 0.6, 0.56], [T.logTop, T.logSide, T.logTop]);
+        gb.box(x, y, z, [0.42, 0.6, 0.42], [0.58, 0.68, 0.58], tri(T.stone), 0.5);
+        break;
+      case "fence": {
+        gb.box(x, y, z, [0.375, 0, 0.375], [0.625, 1, 0.625], tri(T.planks));
+        const link = (n: number) => n === B.FENCE || (def(n).solid && !def(n).shape && !def(n).trans);
+        const rails = (a: [number, number, number], c: [number, number, number]) => {
+          gb.box(x, y, z, [a[0], 0.38, a[2]], [c[0], 0.52, c[2]], tri(T.planks));
+          gb.box(x, y, z, [a[0], 0.74, a[2]], [c[0], 0.88, c[2]], tri(T.planks));
+        };
+        if (link(this.get(x + 1, y, z))) rails([0.625, 0, 0.44], [1, 0, 0.56]);
+        if (link(this.get(x - 1, y, z))) rails([0, 0, 0.44], [0.375, 0, 0.56]);
+        if (link(this.get(x, y, z + 1))) rails([0.44, 0, 0.625], [0.56, 0, 1]);
+        if (link(this.get(x, y, z - 1))) rails([0.44, 0, 0], [0.56, 0, 0.375]);
+        break;
+      }
+      case "ladder": {
+        const t = tri(T.ladder);
+        if (this.solid(x - 1, y, z)) gb.box(x, y, z, [0, 0, 0], [0.06, 1, 1], t);
+        else if (this.solid(x + 1, y, z)) gb.box(x, y, z, [0.94, 0, 0], [1, 1, 1], t);
+        else if (this.solid(x, y, z - 1)) gb.box(x, y, z, [0, 0, 0], [1, 1, 0.06], t);
+        else gb.box(x, y, z, [0, 0, 0.94], [1, 1, 1], t);
+        break;
+      }
+      case "cross": {
+        const t = def(b).tiles[0];
+        gb.quad([[x + 0.15, y, z + 0.15], [x + 0.85, y, z + 0.85], [x + 0.85, y + 0.9, z + 0.85], [x + 0.15, y + 0.9, z + 0.15]], t);
+        gb.quad([[x + 0.85, y, z + 0.15], [x + 0.15, y, z + 0.85], [x + 0.15, y + 0.9, z + 0.85], [x + 0.85, y + 0.9, z + 0.15]], t);
+        break;
+      }
+    }
+  }
+
+  /** Positions of every torch (for flame particles). */
+  torches() {
+    const out: THREE.Vector3[] = [];
+    for (let i = 0; i < this.data.length; i++)
+      if (this.data[i] === B.TORCH) {
+        const x = i % WX, z = Math.floor(i / WX) % WZ, y = Math.floor(i / (WX * WZ));
+        out.push(new THREE.Vector3(x + 0.5, y + 0.72, z + 0.5));
+      }
+    return out;
   }
   buildAll() {
     for (let i = 0; i < NCX * NCZ; i++) this.buildChunk(i);
