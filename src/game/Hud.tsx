@@ -62,6 +62,9 @@ const RECIPES: { out: [number, number]; need: [number, number][]; basic?: boolea
   { out: [I.SWORD, 1], need: [[B.COBBLE, 2], [B.PLANKS, 1]] },
   { out: [I.PICK, 1], need: [[B.COBBLE, 3], [B.PLANKS, 2]] },
   { out: [I.BREAD, 1], need: [[I.APPLE, 2]] },
+  { out: [B.TORCH, 4], need: [[B.PLANKS, 1]], basic: true },
+  { out: [B.FENCE, 3], need: [[B.PLANKS, 4]] },
+  { out: [B.LADDER, 3], need: [[B.PLANKS, 3]] },
 ];
 function Crafting({ table }: { table: boolean }) {
   return (

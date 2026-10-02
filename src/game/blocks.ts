@@ -17,6 +17,11 @@ export const B = {
   CHEST: 13,
   CRAFT: 14,
   CORAL: 15,
+  TORCH: 16,
+  FENCE: 17,
+  LADDER: 18,
+  FLOWER: 19,
+  FLOWER_Y: 20,
 } as const;
 
 export const I = { SWORD: 100, PICK: 101, APPLE: 102, BREAD: 103 } as const;
@@ -26,6 +31,7 @@ export const T = {
   leaves: 8, sand: 9, water: 10, glass: 11, bricks: 12, bedTop: 13, bedSide: 14, chestSide: 15,
   chestTop: 16, craftTop: 17, craftSide: 18, coral: 19, sword: 20, pick: 21, apple: 22, bread: 23,
   heart: 24, heartEmpty: 25, food: 26, foodEmpty: 27,
+  torch: 28, ladder: 29, flowerRed: 30, flowerYellow: 31, creeper: 32, creeperFace: 33, woolRed: 34, woolWhite: 35,
 } as const;
 
 export type Def = {
@@ -36,6 +42,7 @@ export type Def = {
   trans?: boolean; // glass / water: transparent pass
   cutout?: boolean; // leaves: alpha-tested
   stone?: boolean; // faster with pickaxe
+  shape?: "bed" | "torch" | "fence" | "ladder" | "cross"; // custom model instead of a cube
 };
 
 const DEFS: Record<number, Def> = {
@@ -50,10 +57,15 @@ const DEFS: Record<number, Def> = {
   [B.WATER]: { name: "Water", tiles: [T.water, T.water, T.water], hard: Infinity, solid: false, trans: true },
   [B.GLASS]: { name: "Glass", tiles: [T.glass, T.glass, T.glass], hard: 0.3, solid: true, trans: true },
   [B.BRICKS]: { name: "Stone Bricks", tiles: [T.bricks, T.bricks, T.bricks], hard: 1.8, solid: true, stone: true },
-  [B.BED]: { name: "Bed", tiles: [T.bedTop, T.bedSide, T.planks], hard: 0.3, solid: true },
+  [B.BED]: { name: "Bed", tiles: [T.bedTop, T.bedSide, T.planks], hard: 0.3, solid: true, cutout: true, shape: "bed" },
   [B.CHEST]: { name: "Chest", tiles: [T.chestTop, T.chestSide, T.chestTop], hard: 1, solid: true },
   [B.CRAFT]: { name: "Crafting Table", tiles: [T.craftTop, T.craftSide, T.planks], hard: 1, solid: true },
   [B.CORAL]: { name: "Coral", tiles: [T.coral, T.coral, T.coral], hard: 0.3, solid: true },
+  [B.TORCH]: { name: "Torch", tiles: [T.torch, T.torch, T.torch], hard: 0.05, solid: false, cutout: true, shape: "torch" },
+  [B.FENCE]: { name: "Oak Fence", tiles: [T.planks, T.planks, T.planks], hard: 1, solid: true, cutout: true, shape: "fence" },
+  [B.LADDER]: { name: "Ladder", tiles: [T.ladder, T.ladder, T.ladder], hard: 0.4, solid: false, cutout: true, shape: "ladder" },
+  [B.FLOWER]: { name: "Poppy", tiles: [T.flowerRed, T.flowerRed, T.flowerRed], hard: 0.05, solid: false, cutout: true, shape: "cross" },
+  [B.FLOWER_Y]: { name: "Dandelion", tiles: [T.flowerYellow, T.flowerYellow, T.flowerYellow], hard: 0.05, solid: false, cutout: true, shape: "cross" },
 };
 
 const AIR_DEF: Def = { name: "Air", tiles: [0, 0, 0], hard: 0, solid: false };
@@ -66,14 +78,14 @@ export function itemName(id: number): string {
   return ({ [I.SWORD]: "Stone Sword", [I.PICK]: "Stone Pickaxe", [I.APPLE]: "Apple", [I.BREAD]: "Bread" } as Record<number, string>)[id] ?? "?";
 }
 export function itemTile(id: number): number {
-  if (isBlock(id)) return id === B.GRASS ? T.grassSide : def(id).tiles[1];
+  if (isBlock(id)) return id === B.GRASS ? T.grassSide : id === B.BED ? T.woolRed : def(id).tiles[1];
   return ({ [I.SWORD]: T.sword, [I.PICK]: T.pick, [I.APPLE]: T.apple, [I.BREAD]: T.bread } as Record<number, number>)[id] ?? 0;
 }
 export const FOOD: Record<number, number> = { [I.APPLE]: 4, [I.BREAD]: 6 };
 
-// ---------- procedural pixel atlas (8 x 4 tiles of 16px) ----------
+// ---------- procedural pixel atlas (8 x 5 tiles of 16px) ----------
 export const COLS = 8;
-export const ROWS = 4;
+export const ROWS = 5;
 
 function mulberry(seed: number) {
   let a = seed >>> 0;
@@ -103,6 +115,19 @@ const heartFn = (x: number, y: number, s: number) => {
   const X = (x + 0.5 - 8) / s;
   const Y = (8 - (y + 0.5)) / s + 0.25;
   return Math.pow(X * X + Y * Y - 1, 3) - X * X * Y * Y * Y <= 0;
+};
+
+const camo = (r: () => number): RGBA => {
+  const v = r();
+  return v < 0.25 ? [140, 215, 110] : v < 0.6 ? [80, 170, 62] : v < 0.85 ? [50, 130, 45] : [30, 90, 30];
+};
+const flower = (x: number, y: number, petal: [number, number, number], mid: [number, number, number]): RGBA | null => {
+  const d = Math.hypot(x - 7.5, y - 4.5);
+  if (d < 1.2) return mid;
+  if (d < 3.4) return petal;
+  if (y >= 7 && (x === 7 || x === 8)) return [50, 130, 40];
+  if ((y === 10 && x >= 4 && x <= 6) || (y === 11 && x >= 9 && x <= 11)) return [70, 150, 50];
+  return null;
 };
 
 const PAINT: Record<number, Painter> = {
@@ -187,6 +212,27 @@ const PAINT: Record<number, Painter> = {
     if (d < 5) return d > 4 ? [90, 45, 15] : [170, 95, 40];
     return null;
   },
+  [T.torch]: (x, y) => {
+    if (y <= 2 && x >= 7 && x <= 8) return [255, 240, 150];
+    if (y >= 3 && y <= 5 && x >= 6 && x <= 9) return y === 3 ? [255, 200, 60] : [240, 130, 30];
+    if (y >= 6 && x >= 7 && x <= 8) return [120, 82, 40];
+    return null;
+  },
+  [T.ladder]: (x, y) => {
+    if (x === 2 || x === 3 || x === 12 || x === 13) return [110, 80, 45];
+    if (y % 4 === 1 && x > 3 && x < 12) return [150, 112, 62];
+    return null;
+  },
+  [T.flowerRed]: (x, y) => flower(x, y, [210, 30, 35], [60, 30, 20]),
+  [T.flowerYellow]: (x, y) => flower(x, y, [250, 215, 40], [230, 140, 20]),
+  [T.creeper]: (_x, _y, r) => camo(r),
+  [T.creeperFace]: (x, y, r) => {
+    const eye = y >= 4 && y <= 7 && ((x >= 2 && x <= 5) || (x >= 10 && x <= 13));
+    const mouth = (y >= 8 && y <= 10 && x >= 6 && x <= 9) || (y >= 10 && y <= 13 && (x === 5 || x === 6 || x === 9 || x === 10));
+    return eye || mouth ? [20, 30, 20] : camo(r);
+  },
+  [T.woolRed]: (x, y, r) => jit((x + y) % 5 === 0 ? [150, 26, 30] : [180, 34, 38], 14, r),
+  [T.woolWhite]: (x, y, r) => jit((x + y) % 5 === 0 ? [215, 215, 215] : [238, 238, 236], 8, r),
   [T.foodEmpty]: (x, y) => {
     if (Math.abs(x - 15 + y) <= 0.7 && x >= 9 && x <= 14) return [90, 90, 90];
     const d = Math.hypot(x - 6, y - 9);
@@ -254,7 +300,52 @@ export function tileUV(i: number) {
   return { u0, u1, v0, v1 };
 }
 
-type Mats = { opaque: THREE.MeshLambertMaterial; trans: THREE.MeshLambertMaterial; sprite: THREE.MeshLambertMaterial };
+/** Shared animated uniforms (updated by the sky each frame). */
+export const U = { uTime: { value: 0 }, uDay: { value: 1 }, uSea: { value: 14 } };
+
+const WPOS_VERT = (src: string, wave: boolean) =>
+  src
+    .replace("#include <common>", "#include <common>\nvarying vec3 vWPos;\nuniform float uTime;")
+    .replace(
+      "#include <begin_vertex>",
+      wave
+        ? "#include <begin_vertex>\nvec3 wp0 = (modelMatrix * vec4(position,1.0)).xyz;\ntransformed.y += step(0.5, normal.y) * (sin(wp0.x*1.3+uTime*1.6)*0.035 + cos(wp0.z*1.7+uTime*1.2)*0.03 - 0.04);"
+        : "#include <begin_vertex>",
+    )
+    .replace("#include <project_vertex>", "#include <project_vertex>\nvWPos = (modelMatrix * vec4(transformed,1.0)).xyz;");
+const CAUSTIC = `
+float caustic(vec2 p, float t){
+  float c = sin(p.x*1.9 + t*1.1 + sin(p.y*1.3 + t*0.7)*1.7) * sin(p.y*2.1 - t*0.9 + sin(p.x*1.1 - t*0.6)*1.5);
+  return pow(abs(c), 3.0);
+}`;
+function withCaustics(m: THREE.Material) {
+  m.onBeforeCompile = (sh) => {
+    Object.assign(sh.uniforms, U);
+    sh.vertexShader = WPOS_VERT(sh.vertexShader, false);
+    sh.fragmentShader = sh.fragmentShader
+      .replace("#include <common>", "#include <common>\nvarying vec3 vWPos;\nuniform float uTime;\nuniform float uDay;\nuniform float uSea;" + CAUSTIC)
+      .replace(
+        "#include <map_fragment>",
+        "#include <map_fragment>\nif (vWPos.y < uSea - 0.5) { float k = caustic(vWPos.xz*0.9 + vWPos.y*0.2, uTime); float depth = clamp((uSea - vWPos.y)/10.0, 0.0, 1.0); diffuseColor.rgb = diffuseColor.rgb * mix(vec3(1.0), vec3(0.62,0.85,0.92), depth) + vec3(0.25,0.4,0.42) * k * uDay * (1.0 - depth*0.5); }",
+      );
+  };
+  m.customProgramCacheKey = () => "caustics";
+}
+function waterShader(m: THREE.Material) {
+  m.onBeforeCompile = (sh) => {
+    Object.assign(sh.uniforms, U);
+    sh.vertexShader = WPOS_VERT(sh.vertexShader, true);
+    sh.fragmentShader = sh.fragmentShader
+      .replace("#include <common>", "#include <common>\nvarying vec3 vWPos;\nuniform float uTime;\nuniform float uDay;" + CAUSTIC)
+      .replace(
+        "#include <map_fragment>",
+        "#include <map_fragment>\nfloat k = caustic(vWPos.xz*0.7, uTime*1.2) + caustic(vWPos.xz*1.6 + 3.0, uTime*1.7)*0.5;\ndiffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.18,0.55,0.62), 0.45) + vec3(0.35,0.55,0.6) * k * (0.3 + 0.7*uDay);\ndiffuseColor.a = 0.62 + k*0.15;",
+      );
+  };
+  m.customProgramCacheKey = () => "water";
+}
+
+type Mats = { opaque: THREE.MeshLambertMaterial; trans: THREE.MeshLambertMaterial; sprite: THREE.MeshLambertMaterial; water: THREE.MeshPhongMaterial };
 let mats: Mats | null = null;
 export function getMaterials(): Mats {
   if (mats) return mats;
@@ -263,7 +354,10 @@ export function getMaterials(): Mats {
     opaque: new THREE.MeshLambertMaterial({ map, vertexColors: true, alphaTest: 0.5 }),
     trans: new THREE.MeshLambertMaterial({ map, vertexColors: true, transparent: true, depthWrite: false }),
     sprite: new THREE.MeshLambertMaterial({ map, alphaTest: 0.5, side: THREE.DoubleSide }),
+    water: new THREE.MeshPhongMaterial({ map, vertexColors: true, transparent: true, depthWrite: false, shininess: 90, specular: 0x9fe8ff, side: THREE.DoubleSide }),
   };
+  withCaustics(mats.opaque);
+  waterShader(mats.water);
   return mats;
 }
 
@@ -297,6 +391,42 @@ export class GeoBuilder {
     });
     this.idx.push(n, n + 1, n + 2, n, n + 2, n + 3);
   }
+  /** Sub-block box with pixel-correct UV cropping. a/b in 0..1 block-local units. front overrides the -z face tile. */
+  box(bx: number, by: number, bz: number, a: [number, number, number], b: [number, number, number], tiles: [number, number, number], light = 1, front?: number) {
+    FACES.forEach((f, fi) => {
+      const { u0, u1, v0, v1 } = tileUV(fi === 5 && front !== undefined ? front : tiles[f.t]);
+      const n = this.pos.length / 3;
+      const ax = f.d[0] !== 0 ? 0 : f.d[1] !== 0 ? 1 : 2;
+      for (const c of f.c) {
+        const p: [number, number, number] = [a[0] + c[0] * (b[0] - a[0]), a[1] + c[1] * (b[1] - a[1]), a[2] + c[2] * (b[2] - a[2])];
+        const uc = ax === 0 ? c[2] : c[0];
+        const vc = ax === 1 ? c[2] : c[1];
+        const su = ax === 0 ? [a[2], b[2]] : [a[0], b[0]];
+        const sv = ax === 1 ? [a[2], b[2]] : [a[1], b[1]];
+        const fu = Math.min(1, Math.max(0, su[0]! + uc * (su[1]! - su[0]!)));
+        const fv = Math.min(1, Math.max(0, sv[0]! + vc * (sv[1]! - sv[0]!)));
+        this.pos.push(bx + p[0], by + p[1], bz + p[2]);
+        this.nor.push(...f.d);
+        this.uv.push(u0 + (u1 - u0) * fu, v0 + (v1 - v0) * fv);
+        const l = f.s * light;
+        this.col.push(l, l, l);
+      }
+      this.idx.push(n, n + 1, n + 2, n, n + 2, n + 3);
+    });
+  }
+  /** Double-sided quad (BL, BR, TR, TL) with a full tile. */
+  quad(pts: [number, number, number][], tile: number, light = 1) {
+    const { u0, u1, v0, v1 } = tileUV(tile);
+    const n = this.pos.length / 3;
+    const uvs = [[u0, v0], [u1, v0], [u1, v1], [u0, v1]];
+    pts.forEach((p, k) => {
+      this.pos.push(p[0], p[1], p[2]);
+      this.nor.push(0, 1, 0);
+      this.uv.push(uvs[k]![0]!, uvs[k]![1]!);
+      this.col.push(light * 0.9, light * 0.9, light * 0.9);
+    });
+    this.idx.push(n, n + 1, n + 2, n, n + 2, n + 3, n, n + 2, n + 1, n, n + 3, n + 2);
+  }
   build() {
     const g = new THREE.BufferGeometry();
     g.setAttribute("position", new THREE.Float32BufferAttribute(this.pos, 3));
@@ -315,7 +445,8 @@ export function itemGeometry(id: number): THREE.BufferGeometry {
   const hit = itemGeoCache.get(id);
   if (hit) return hit;
   let g: THREE.BufferGeometry;
-  if (isBlock(id)) {
+  const sh = def(id).shape;
+  if (isBlock(id) && sh !== "torch" && sh !== "ladder" && sh !== "cross") {
     const b = new GeoBuilder();
     for (const f of FACES) b.face(-0.5, -0.5, -0.5, f, def(id).tiles[f.t], 1.15);
     g = b.build();
@@ -333,6 +464,7 @@ export function itemGeometry(id: number): THREE.BufferGeometry {
 }
 export function itemMaterial(id: number) {
   const m = getMaterials();
-  if (!isBlock(id)) return m.sprite;
+  const sh = def(id).shape;
+  if (!isBlock(id) || sh === "torch" || sh === "ladder" || sh === "cross") return m.sprite;
   return def(id).trans ? m.trans : m.opaque;
 }
