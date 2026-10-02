@@ -3,7 +3,8 @@ import { useFrame, useThree } from "@react-three/fiber";
 import { Html } from "@react-three/drei";
 import * as THREE from "three";
 import type { Engine, Drop } from "./engine";
-import { B, isBlock, itemGeometry, itemMaterial } from "./blocks";
+import { B, T, U, GeoBuilder, getMaterials, isBlock, itemGeometry, itemMaterial } from "./blocks";
+import { sfx } from "./audio";
 import { HOUSES, fbm, WX, WZ } from "./world";
 import { G, useGame } from "./store";
 
@@ -24,7 +25,9 @@ export function GameScene({ engine }: { engine: Engine }) {
       <Drops engine={engine} />
       <Particles engine={engine} />
       <Selection engine={engine} />
-      <Fish />
+      <Fish engine={engine} />
+      <Torches engine={engine} />
+      <Underwater engine={engine} />
       <Mobs engine={engine} />
     </>
   );
@@ -48,7 +51,7 @@ function Terrain({ engine }: { engine: Engine }) {
 const NIGHT = new THREE.Color(0.015, 0.025, 0.08);
 const DAY = new THREE.Color(0.47, 0.66, 1.0);
 const DUSK = new THREE.Color(0.98, 0.52, 0.28);
-const WATER_FOG = new THREE.Color(0.06, 0.3, 0.42);
+const WATER_FOG = new THREE.Color(0.05, 0.33, 0.4);
 
 function SkyAndLight({ engine }: { engine: Engine }) {
   const { scene, camera } = useThree();
@@ -75,12 +78,14 @@ function SkyAndLight({ engine }: { engine: Engine }) {
     if (dir.current) scene.add(dir.current.target);
   }, [scene, bg, fog]);
 
-  useFrame(() => {
+  useFrame(({ clock }) => {
     const t = engine.dayTime();
     const a = t * Math.PI * 2;
+    U.uTime.value = clock.elapsedTime;
     const sx = Math.cos(a), sy = Math.sin(a);
     const day = THREE.MathUtils.clamp(sy * 2.5 + 0.35, 0, 1);
     const dusk = Math.max(0, 1 - Math.abs(sy) * 3.5) * 0.55;
+    U.uDay.value = 0.25 + day * 0.75;
     bg.copy(NIGHT).lerp(DAY, day).lerp(DUSK, dusk);
     if (G.underwater) {
       fog.color.copy(WATER_FOG).multiplyScalar(0.35 + day * 0.65);
@@ -631,6 +636,397 @@ function Pig() {
           <Box size={[0.2, 0.3, 0.2]} pos={[0, -0.15, 0]} mat={pink} />
         </group>
       ))}
+    </group>
+  );
+}
+// ---------------- fish schools ----------------
+function Fish({ engine }: { engine: Engine }) {
+  const SCHOOLS = 5, PER = 12, N = SCHOOLS * PER;
+  const body = useRef<THREE.InstancedMesh>(null);
+  const tail = useRef<THREE.InstancedMesh>(null);
+  const fin = useRef<THREE.InstancedMesh>(null);
+  const dummy = useMemo(() => new THREE.Object3D(), []);
+  const flee = useMemo(() => Array.from({ length: SCHOOLS }, () => ({ x: 0, z: 0, k: 0 })), []);
+  const phase = useMemo(() => Array.from({ length: SCHOOLS }, () => 0), []);
+  useEffect(() => {
+    const c = new THREE.Color();
+    for (let i = 0; i < N; i++) {
+      const h = [0.07, 0.13, 0.55, 0.95, 0.5, 0.0][Math.floor(Math.random() * 6)]! + (Math.random() - 0.5) * 0.04;
+      body.current?.setColorAt(i, c.setHSL(h, 0.9, 0.55));
+      tail.current?.setColorAt(i, c.setHSL((h + 0.5 + Math.random() * 0.2) % 1, 0.85, Math.random() < 0.4 ? 0.92 : 0.45));
+      fin.current?.setColorAt(i, c.setHSL(h, 0.7, 0.3));
+    }
+    [body, tail, fin].forEach((r) => { if (r.current?.instanceColor) r.current.instanceColor.needsUpdate = true; });
+  }, [N]);
+  useFrame(({ clock }, raw) => {
+    const dt = Math.min(raw, 0.05);
+    const t = clock.elapsedTime;
+    const p = engine.pos;
+    for (let k = 0; k < SCHOOLS; k++) {
+      const cx0 = 16 + 9 * Math.sin(t * 0.05 + k * 1.7);
+      const cz0 = 48 + 38 * Math.sin(t * 0.03 + k * 2.3);
+      const f = flee[k]!;
+      const dx = cx0 + f.x - p.x, dz = cz0 + f.z - p.z;
+      const d = Math.hypot(dx, dz) || 1;
+      const scared = d < 6 && p.y < 15 ? (6 - d) / 6 : 0;
+      f.x += (dx / d) * scared * 8 * dt;
+      f.z += (dz / d) * scared * 8 * dt;
+      f.x *= Math.exp(-0.25 * dt);
+      f.z *= Math.exp(-0.25 * dt);
+      f.k += (scared - f.k) * (1 - Math.exp(-4 * dt));
+      phase[k]! += dt * (0.9 + f.k * 2.5);
+      const cx = Math.max(3, Math.min(30, cx0 + f.x)), cz = Math.max(4, Math.min(92, cz0 + f.z));
+      const cy = 9.5 + 1.3 * Math.sin(t * 0.2 + k);
+      const ds = k % 2 ? 1 : -1;
+      for (let j = 0; j < PER; j++) {
+        const i = k * PER + j;
+        const ang = phase[k]! * ds + j * 0.52;
+        const rad = 1.1 + (j % 3) * 0.6 + f.k * 0.8;
+        const x = cx + Math.cos(ang) * rad, z = cz + Math.sin(ang) * rad;
+        const y = cy + ((j % 4) - 1.5) * 0.4 + Math.sin(t * 2 + j) * 0.08;
+        const vx = -Math.sin(ang) * ds, vz = Math.cos(ang) * ds;
+        const yaw = Math.atan2(-vz, vx);
+        const wig = Math.sin(t * (12 + f.k * 14) + j * 1.7);
+        dummy.position.set(x, y, z);
+        dummy.rotation.set(0, yaw + wig * 0.12, 0);
+        dummy.scale.set(1, 1, 1);
+        dummy.updateMatrix();
+        body.current?.setMatrixAt(i, dummy.matrix);
+        const fx = Math.cos(yaw), fz = -Math.sin(yaw);
+        dummy.position.set(x - fx * 0.27, y, z - fz * 0.27);
+        dummy.rotation.set(0, yaw + wig * 0.6, 0);
+        dummy.updateMatrix();
+        tail.current?.setMatrixAt(i, dummy.matrix);
+        dummy.position.set(x - fx * 0.02, y + 0.15, z - fz * 0.02);
+        dummy.rotation.set(0, yaw, 0);
+        dummy.updateMatrix();
+        fin.current?.setMatrixAt(i, dummy.matrix);
+      }
+    }
+    [body, tail, fin].forEach((r) => { if (r.current) r.current.instanceMatrix.needsUpdate = true; });
+  });
+  return (
+    <>
+      <instancedMesh ref={body} args={[undefined, undefined, N]} frustumCulled={false}>
+        <boxGeometry args={[0.4, 0.24, 0.13]} />
+        <meshLambertMaterial />
+      </instancedMesh>
+      <instancedMesh ref={tail} args={[undefined, undefined, N]} frustumCulled={false}>
+        <boxGeometry args={[0.16, 0.22, 0.03]} />
+        <meshLambertMaterial />
+      </instancedMesh>
+      <instancedMesh ref={fin} args={[undefined, undefined, N]} frustumCulled={false}>
+        <boxGeometry args={[0.18, 0.08, 0.02]} />
+        <meshLambertMaterial />
+      </instancedMesh>
+    </>
+  );
+}
+
+// ---------------- torches: flickering voxel flames + tower floodlight ----------------
+function Torches({ engine }: { engine: Engine }) {
+  const MAX = 160, PER = 4;
+  const mesh = useRef<THREE.InstancedMesh>(null);
+  const list = useRef<THREE.Vector3[]>([]);
+  const ver = useRef(-1);
+  const acc = useRef(0);
+  const flood = useRef<THREE.PointLight>(null);
+  const dummy = useMemo(() => new THREE.Object3D(), []);
+  const col = useMemo(() => new THREE.Color(), []);
+  const fl = useMemo(() => engine.world.floodlight(), [engine]);
+  useFrame(({ clock }, dt) => {
+    acc.current += dt;
+    if (ver.current !== engine.world.version && acc.current > 0.5) {
+      acc.current = 0;
+      ver.current = engine.world.version;
+      list.current = engine.world.torches().slice(0, MAX);
+    }
+    const im = mesh.current;
+    if (!im) return;
+    const t = clock.elapsedTime;
+    let n = 0;
+    list.current.forEach((p, ti) => {
+      for (let k = 0; k < PER; k++) {
+        const ph = (t * (1.6 + k * 0.3) + k * 0.27 + ti * 0.13) % 1;
+        const core = k === 0;
+        const s = core ? 0.13 + Math.sin(t * 23 + ti) * 0.025 : 0.07 * (1 - ph);
+        dummy.position.set(
+          p.x + (core ? 0 : Math.sin(ti + k * 2.1 + t * 3) * 0.05),
+          p.y + (core ? 0.06 + Math.sin(t * 17 + ti) * 0.015 : 0.1 + ph * 0.35),
+          p.z + (core ? 0 : Math.cos(ti + k * 1.3 + t * 2.6) * 0.05),
+        );
+        dummy.rotation.set(0, t * 2 + k, 0);
+        dummy.scale.setScalar(s);
+        dummy.updateMatrix();
+        im.setMatrixAt(n, dummy.matrix);
+        im.setColorAt(n, core ? col.setRGB(1, 0.85, 0.35) : col.setRGB(1, 0.55 - ph * 0.35, 0.1));
+        n++;
+      }
+    });
+    im.count = n;
+    im.instanceMatrix.needsUpdate = true;
+    if (im.instanceColor) im.instanceColor.needsUpdate = true;
+    if (flood.current) {
+      const night = engine.isNight() || G.underwater;
+      flood.current.intensity = (night ? 60 : 12) * (0.92 + Math.sin(t * 9) * 0.04);
+    }
+  });
+  return (
+    <>
+      <instancedMesh ref={mesh} args={[undefined, undefined, MAX * PER]} frustumCulled={false}>
+        <boxGeometry args={[1, 1, 1]} />
+        <meshBasicMaterial toneMapped={false} />
+      </instancedMesh>
+      <pointLight ref={flood} position={[fl.x, fl.y, fl.z]} color={0xffd9a0} distance={34} decay={1.4} intensity={20} />
+    </>
+  );
+}
+
+// ---------------- underwater: light shafts + rising bubbles/dust ----------------
+function Underwater({ engine }: { engine: Engine }) {
+  const { camera } = useThree();
+  const rays = useRef<THREE.Group>(null);
+  const pts = useRef<THREE.Points>(null);
+  const COUNT = 260;
+  const seeds = useMemo(() => Array.from({ length: 9 }, (_, i) => ({ a: (i / 9) * Math.PI * 2 + Math.random(), r: 3 + Math.random() * 8, w: 0.6 + Math.random() * 1.4 })), []);
+  const geo = useMemo(() => {
+    const g = new THREE.BufferGeometry();
+    const p = new Float32Array(COUNT * 3);
+    for (let i = 0; i < COUNT; i++) { p[i * 3] = (Math.random() - 0.5) * 16; p[i * 3 + 1] = Math.random() * 10; p[i * 3 + 2] = (Math.random() - 0.5) * 16; }
+    g.setAttribute("position", new THREE.BufferAttribute(p, 3));
+    return g;
+  }, []);
+  const rayMat = useMemo(() => new THREE.MeshBasicMaterial({ color: 0xc8f4ff, transparent: true, opacity: 0.07, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide, fog: false }), []);
+  useFrame(({ clock }, raw) => {
+    const dt = Math.min(raw, 0.05);
+    const on = G.underwater;
+    const t = clock.elapsedTime;
+    const day = THREE.MathUtils.clamp(Math.sin(engine.dayTime() * Math.PI * 2) * 2.5 + 0.35, 0, 1);
+    if (rays.current) {
+      rays.current.visible = on && day > 0.05;
+      rays.current.position.set(camera.position.x, 0, camera.position.z);
+      rays.current.children.forEach((c, i) => {
+        const s = seeds[i]!;
+        c.position.set(Math.cos(s.a + t * 0.02) * s.r, 14 - 7, Math.sin(s.a + t * 0.02) * s.r);
+        c.rotation.set(0.25 * Math.sin(t * 0.3 + i), Math.atan2(camera.position.x - (camera.position.x + c.position.x), camera.position.z - (camera.position.z + c.position.z)), 0.18);
+        c.scale.set(s.w, 1, 1);
+      });
+      rayMat.opacity = (0.05 + 0.04 * Math.sin(t * 0.7)) * day;
+    }
+    if (pts.current) {
+      pts.current.visible = on;
+      if (on) {
+        pts.current.position.set(camera.position.x, camera.position.y - 5, camera.position.z);
+        const a = geo.getAttribute("position") as THREE.BufferAttribute;
+        for (let i = 0; i < COUNT; i++) {
+          let y = a.getY(i) + dt * (i % 3 === 0 ? 1.4 : 0.15);
+          if (y > 10) y = 0;
+          a.setY(i, y);
+          a.setX(i, a.getX(i) + Math.sin(t + i) * dt * 0.1);
+        }
+        a.needsUpdate = true;
+      }
+    }
+  });
+  return (
+    <>
+      <group ref={rays} visible={false}>
+        {seeds.map((_, i) => (
+          <mesh key={i} material={rayMat}>
+            <planeGeometry args={[1.2, 18]} />
+          </mesh>
+        ))}
+      </group>
+      <points ref={pts} geometry={geo} visible={false}>
+        <pointsMaterial size={0.07} color={0xd8f6ff} transparent opacity={0.7} depthWrite={false} />
+      </points>
+    </>
+  );
+}
+
+// ---------------- land mobs: villagers, pigs, creepers ----------------
+type Mob = {
+  kind: "villager" | "pig" | "creeper"; x: number; y: number; z: number; hx: number; hz: number; tx: number; tz: number;
+  yaw: number; wait: number; phase: number; fuse: number; dead: number;
+};
+
+function Mobs({ engine }: { engine: Engine }) {
+  const mobs = useMemo<Mob[]>(() => {
+    const w = engine.world;
+    const out: Mob[] = [];
+    const add = (kind: Mob["kind"], x: number, z: number) =>
+      out.push({ kind, x, z, y: w.groundBelow(x, 46, z), hx: x, hz: z, tx: x, tz: z, yaw: 0, wait: 1 + Math.random() * 2, phase: 0, fuse: 0, dead: 0 });
+    HOUSES.forEach((h) => add("villager", h.x + 3.5, h.z + 8.5));
+    [[64, 40], [70, 36], [62, 52], [86, 40]].forEach(([x, z]) => add("pig", x! + 0.5, z! + 0.5));
+    [[44, 84], [88, 14], [42, 12]].forEach(([x, z]) => add("creeper", x! + 0.5, z! + 0.5));
+    return out;
+  }, [engine]);
+  const refs = useRef<(THREE.Group | null)[]>([]);
+  useFrame(({ clock }, raw) => {
+    const dt = Math.min(raw, 0.05);
+    const w = engine.world;
+    const p = engine.pos;
+    mobs.forEach((mob, i) => {
+      const g = refs.current[i];
+      if (mob.dead > 0) {
+        mob.dead -= dt;
+        if (g) g.visible = false;
+        if (mob.dead <= 0) { mob.x = mob.hx; mob.z = mob.hz; mob.y = w.groundBelow(mob.x, 46, mob.z); }
+        return;
+      }
+      const dp = Math.hypot(p.x - mob.x, p.y - mob.y, p.z - mob.z);
+      const playing = G.ui === "play" || G.ui === "paused" || G.ui === "chat" || G.ui === "inventory";
+      if (mob.kind === "creeper" && playing) {
+        if (dp < 12 && dp > 1.6) { mob.tx = p.x; mob.tz = p.z; mob.wait = 0; }
+        if (dp < 2.8) {
+          if (mob.fuse === 0) sfx("hiss");
+          mob.fuse += dt;
+        } else mob.fuse = Math.max(0, mob.fuse - dt * 2);
+        if (mob.fuse > 1.5) {
+          mob.fuse = 0;
+          mob.dead = 25;
+          sfx("boom");
+          engine.burst(mob.x, mob.y + 1, mob.z, new THREE.Color(0.85, 0.85, 0.85), 60, 9);
+          if (dp < 4.5) engine.damage(Math.max(1, Math.round(10 * (1 - dp / 4.5))), "a Creeper");
+          return;
+        }
+      }
+      if (mob.wait > 0) {
+        mob.wait -= dt;
+        if (mob.wait <= 0) {
+          mob.tx = mob.hx + (Math.random() - 0.5) * 14;
+          mob.tz = mob.hz + (Math.random() - 0.5) * 14;
+        }
+      } else {
+        const dx = mob.tx - mob.x, dz = mob.tz - mob.z;
+        const d = Math.hypot(dx, dz);
+        if (d < 0.4) mob.wait = 2 + Math.random() * 4;
+        else {
+          const sp = (mob.kind === "pig" ? 1 : mob.kind === "creeper" ? (mob.fuse > 0 ? 0.3 : 1.6) : 1.3) * dt;
+          const nx = mob.x + (dx / d) * sp, nz = mob.z + (dz / d) * sp;
+          const ny = w.groundBelow(nx, mob.y + 1.2, nz);
+          const wet = w.get(Math.floor(nx), Math.floor(mob.y), Math.floor(nz)) === B.WATER || w.get(Math.floor(nx), ny, Math.floor(nz)) === B.WATER;
+          if (ny - mob.y > 1.1 || mob.y - ny > 3 || wet || w.solid(Math.floor(nx), ny + 1, Math.floor(nz))) mob.wait = 1 + Math.random() * 2;
+          else {
+            mob.x = nx;
+            mob.z = nz;
+            mob.y += (ny - mob.y) * Math.min(1, dt * 12);
+            mob.phase += dt * (mob.kind === "creeper" ? 8 : 6);
+            mob.yaw = lerpAngle(mob.yaw, Math.atan2(-dx, -dz), 1 - Math.exp(-8 * dt));
+          }
+        }
+      }
+      if (g) {
+        g.visible = true;
+        g.position.set(mob.x, mob.y, mob.z);
+        g.rotation.y = mob.yaw;
+        const swing = mob.wait > 0 ? 0 : Math.sin(mob.phase) * 0.6;
+        const puff = mob.fuse > 0 ? 1 + Math.abs(Math.sin(clock.elapsedTime * 18)) * 0.12 * (mob.fuse / 1.5 + 0.3) : 1;
+        g.scale.set(puff, 1 + (puff - 1) * 0.5, puff);
+        g.traverse((o) => {
+          if (o.userData["leg"] !== undefined) o.rotation.x = swing * (o.userData["leg"] as number);
+        });
+      }
+    });
+  });
+  return (
+    <>
+      {mobs.map((m, i) => (
+        <group key={i} ref={(g) => { refs.current[i] = g; }}>
+          {m.kind === "villager" ? <Villager /> : m.kind === "pig" ? <Pig /> : <Creeper />}
+        </group>
+      ))}
+    </>
+  );
+}
+
+function Villager() {
+  const m = useMemo(() => {
+    const c = (x: number) => new THREE.MeshLambertMaterial({ color: x });
+    return { robe: c(0x6b4a2e), trim: c(0x9a7444), dark: c(0x3e2a18), skin: c(0xc4906c), nose: c(0xb07a58), eye: c(0xffffff), pupil: c(0x22b04a), brow: c(0x3a2414) };
+  }, []);
+  return (
+    <group scale={0.9}>
+      <group position={[-0.125, 0.5, 0]} userData={{ leg: 1 }}>
+        <Box size={[0.24, 0.5, 0.24]} pos={[0, -0.25, 0]} mat={m.dark} />
+      </group>
+      <group position={[0.125, 0.5, 0]} userData={{ leg: -1 }}>
+        <Box size={[0.24, 0.5, 0.24]} pos={[0, -0.25, 0]} mat={m.dark} />
+      </group>
+      <Box size={[0.52, 1.0, 0.32]} pos={[0, 1.0, 0]} mat={m.robe} />
+      <Box size={[0.62, 0.2, 0.4]} pos={[0, 0.56, 0]} mat={m.trim} />
+      <Box size={[0.56, 0.06, 0.36]} pos={[0, 1.47, 0]} mat={m.trim} />
+      {/* folded arms */}
+      <Box size={[0.26, 0.36, 0.28]} pos={[-0.39, 1.33, -0.1]} mat={m.robe} />
+      <Box size={[0.26, 0.36, 0.28]} pos={[0.39, 1.33, -0.1]} mat={m.robe} />
+      <Box size={[0.8, 0.25, 0.26]} pos={[0, 1.17, -0.27]} mat={m.robe} />
+      <Box size={[0.3, 0.2, 0.04]} pos={[0, 1.17, -0.41]} mat={m.skin} />
+      <group position={[0, 1.5, 0]}>
+        <Box size={[0.5, 0.64, 0.5]} pos={[0, 0.32, 0]} mat={m.skin} />
+        <Box size={[0.13, 0.27, 0.14]} pos={[0, 0.2, -0.31]} mat={m.nose} />
+        <Box size={[0.12, 0.07, 0.02]} pos={[-0.12, 0.37, -0.255]} mat={m.eye} />
+        <Box size={[0.12, 0.07, 0.02]} pos={[0.12, 0.37, -0.255]} mat={m.eye} />
+        <Box size={[0.055, 0.07, 0.025]} pos={[-0.09, 0.37, -0.26]} mat={m.pupil} />
+        <Box size={[0.055, 0.07, 0.025]} pos={[0.09, 0.37, -0.26]} mat={m.pupil} />
+        <Box size={[0.4, 0.05, 0.025]} pos={[0, 0.44, -0.258]} mat={m.brow} />
+      </group>
+    </group>
+  );
+}
+
+function Pig() {
+  const pink = useMemo(() => new THREE.MeshLambertMaterial({ color: 0xf0a0a8 }), []);
+  const snout = useMemo(() => new THREE.MeshLambertMaterial({ color: 0xd9788a }), []);
+  const dark = useMemo(() => new THREE.MeshLambertMaterial({ color: 0x2a1a1a }), []);
+  const white = useMemo(() => new THREE.MeshLambertMaterial({ color: 0xffffff }), []);
+  const legs: [number, number, number][] = [[-0.2, 0.3, -0.35], [0.2, 0.3, -0.35], [-0.2, 0.3, 0.35], [0.2, 0.3, 0.35]];
+  return (
+    <group>
+      <Box size={[0.62, 0.52, 1.0]} pos={[0, 0.56, 0]} mat={pink} />
+      <Box size={[0.5, 0.5, 0.5]} pos={[0, 0.76, -0.66]} mat={pink} />
+      <Box size={[0.28, 0.18, 0.1]} pos={[0, 0.66, -0.95]} mat={snout} />
+      <Box size={[0.05, 0.06, 0.02]} pos={[-0.06, 0.67, -1.0]} mat={dark} />
+      <Box size={[0.05, 0.06, 0.02]} pos={[0.06, 0.67, -1.0]} mat={dark} />
+      <Box size={[0.09, 0.09, 0.02]} pos={[-0.15, 0.86, -0.915]} mat={white} />
+      <Box size={[0.09, 0.09, 0.02]} pos={[0.15, 0.86, -0.915]} mat={white} />
+      <Box size={[0.045, 0.09, 0.025]} pos={[-0.13, 0.86, -0.92]} mat={dark} />
+      <Box size={[0.045, 0.09, 0.025]} pos={[0.13, 0.86, -0.92]} mat={dark} />
+      <mesh position={[-0.2, 1.03, -0.62]} rotation={[0.3, 0, 0.5]} material={pink}><boxGeometry args={[0.16, 0.06, 0.16]} /></mesh>
+      <mesh position={[0.2, 1.03, -0.62]} rotation={[0.3, 0, -0.5]} material={pink}><boxGeometry args={[0.16, 0.06, 0.16]} /></mesh>
+      <Box size={[0.06, 0.06, 0.1]} pos={[0, 0.72, 0.54]} mat={snout} />
+      {legs.map((lp, i) => (
+        <group key={i} position={lp} userData={{ leg: i % 3 === 0 ? 1 : -1 }}>
+          <Box size={[0.2, 0.3, 0.2]} pos={[0, -0.15, 0]} mat={pink} />
+          <Box size={[0.21, 0.05, 0.21]} pos={[0, -0.28, 0]} mat={dark} />
+        </group>
+      ))}
+    </group>
+  );
+}
+
+let creeperGeo: { skin: THREE.BufferGeometry; head: THREE.BufferGeometry } | null = null;
+function getCreeperGeo() {
+  if (creeperGeo) return creeperGeo;
+  const a = new GeoBuilder();
+  a.box(-0.5, -0.5, -0.5, [0, 0, 0], [1, 1, 1], [T.creeper, T.creeper, T.creeper], 1.1);
+  const h = new GeoBuilder();
+  h.box(-0.5, -0.5, -0.5, [0, 0, 0], [1, 1, 1], [T.creeper, T.creeper, T.creeper], 1.1, T.creeperFace);
+  creeperGeo = { skin: a.build(), head: h.build() };
+  return creeperGeo;
+}
+function Creeper() {
+  const geo = getCreeperGeo();
+  const mat = getMaterials().opaque;
+  const legs: [number, number, number][] = [[-0.13, 0.38, -0.2], [0.13, 0.38, -0.2], [-0.13, 0.38, 0.2], [0.13, 0.38, 0.2]];
+  return (
+    <group>
+      {legs.map((lp, i) => (
+        <group key={i} position={lp} userData={{ leg: i === 0 || i === 3 ? 1 : -1 }}>
+          <mesh geometry={geo.skin} material={mat} position={[0, -0.19, i < 2 ? -0.02 : 0.02]} scale={[0.25, 0.38, 0.25]} />
+        </group>
+      ))}
+      <mesh geometry={geo.skin} material={mat} position={[0, 0.92, 0]} scale={[0.5, 0.82, 0.27]} />
+      <mesh geometry={geo.head} material={mat} position={[0, 1.58, 0]} scale={0.5} />
     </group>
   );
 }
