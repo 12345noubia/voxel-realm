@@ -43,7 +43,7 @@
 </tr>
 <tr>
 <td><img src="docs/screenshots/inventory.png" alt="Inventory"/><p align="center"><b>Inventory & crafting</b></p></td>
-<td><img src="docs/screenshots/night.png" alt="Night"/><p align="center"><b>Nightfall</b></p></td>
+<td><img src="docs/screenshots/night.png" alt="Night"/><p align="center"><b>Night sky with boxy clouds</b></p></td>
 </tr>
 </table>
 
