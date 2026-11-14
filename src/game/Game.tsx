@@ -9,6 +9,7 @@ import { G, emit } from "./store";
 export default function Game() {
   const [engine] = useState(() => new Engine());
   const [room, setRoom] = useState("");
+  useEffect(() => { if (import.meta.env.DEV) Object.assign(window, { __engine: engine, __G: G, __emit: emit }); }, [engine]);
 
   useEffect(() => {
     if (!room) return;
